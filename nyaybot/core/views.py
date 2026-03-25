@@ -1,26 +1,48 @@
-from django.http import JsonResponse
+from django.shortcuts import render
+from .classifier import classify
 from .context_extractor import extract_context
 from .rights_engine import get_data
 from .ai_explainer import explain
 
+
 def home(request):
-    user_input = request.GET.get("query")
+    result = None
 
-    if not user_input:
-        return JsonResponse({"error": "No input provided"})
+    if request.method == "POST":
+        user_input = request.POST.get("text", "").strip()
 
-    context = extract_context(user_input)
-    case = context.get("crime_type", "unknown")
+        if user_input:
+            # Step 1: Try ML classifier first
+            output = classify(user_input)
 
-    if case == "unknown":
-        return JsonResponse({"error": "Case not supported yet"})  # ✅ 8 spaces
+            if output["source"] == "ml":
+                crime_types = [output["crime_type"]]
+            else:
+                # Step 2: Fall back to keyword-based multi-crime extraction
+                context = extract_context(user_input)
+                crime_types = context.get("crime_types", ["unknown"])
 
-    data = get_data(case)
-    explanation = explain(data)
+            # Step 3: Build results for each detected crime
+            if crime_types == ["unknown"]:
+                result = {
+                    "unknown": True,
+                    "message": "Could not identify the crime type. Please provide more details — what happened, where, and whether any threats or force were involved.",
+                    "example": 'Example: "Someone stole my phone on a bus" or "I was cheated online and money was taken from my account"'
+                }
+            else:
+                crimes = []
+                for crime_type in crime_types:
+                    data = get_data(crime_type)
+                    if data:
+                        explanation = explain(data, user_input, crime_type)
+                        crimes.append({
+                            "crime_type": crime_type.replace("_", " ").title(),
+                            "explanation": explanation,
+                        })
 
-    return JsonResponse({
-        "structured_data": data,
-        "explanation": explanation,
-        "context": context
-    })  # ✅ properly indented inside function
-         
+                result = {
+                    "unknown": False,
+                    "crimes": crimes,
+                }
+
+    return render(request, "index.html", {"result": result})
